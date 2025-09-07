@@ -1,9 +1,12 @@
-// api/trade.js - improved price extraction with fallback
+// api/trade.js - logs trades to Google Sheets via service account
 
 const axios = require('axios');
+const { google } = require('googleapis');
 
 const ALPACA_API_KEY = process.env.ALPACA_API_KEY;
 const ALPACA_SECRET_KEY = process.env.ALPACA_SECRET_KEY;
+const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
+const GOOGLE_SERVICE_ACCOUNT = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
 const ALPACA_BASE_URL = 'https://paper-api.alpaca.markets';
 const TRADE_PERCENT = 0.02;
 const ALLOWED_TICKERS = ['IMNM'];
@@ -44,6 +47,33 @@ async function placeOrder(symbol, side, qty) {
   });
 }
 
+async function logToGoogleSheet(ticker, action, qty, price, notes = '') {
+  const auth = new google.auth.JWT(
+    GOOGLE_SERVICE_ACCOUNT.client_email,
+    null,
+    GOOGLE_SERVICE_ACCOUNT.private_key,
+    ['https://www.googleapis.com/auth/spreadsheets']
+  );
+
+  const sheets = google.sheets({ version: 'v4', auth });
+
+  const row = [[
+    new Date().toISOString(),
+    ticker,
+    action,
+    qty,
+    price,
+    notes
+  ]];
+
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: GOOGLE_SHEET_ID,
+    range: 'Sheet1!A:F',
+    valueInputOption: 'USER_ENTERED',
+    resource: { values: row },
+  });
+}
+
 module.exports = async (req, res) => {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
@@ -77,6 +107,8 @@ module.exports = async (req, res) => {
     if (!qty || qty < 1) return res.status(400).send('Not enough buying power');
 
     await placeOrder(ticker, action.toLowerCase(), qty);
+    await logToGoogleSheet(ticker, action, qty, price, test ? 'test mode' : 'live');
+
     res.status(200).send(`Order placed: ${action} ${qty} ${ticker}`);
   } catch (err) {
     console.error('ERROR:', err);
