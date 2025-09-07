@@ -1,4 +1,4 @@
-// api/trade.js - Vercel-native version with optional market hours bypass
+// api/trade.js - with qty validation fix
 
 const axios = require('axios');
 
@@ -66,9 +66,11 @@ module.exports = async (req, res) => {
       },
     });
 
-    const price = quote.data.quote.ap;
+    const price = quote?.data?.quote?.ap;
+    if (!price || isNaN(price)) return res.status(400).send('Invalid price data');
+
     const qty = Math.floor(maxSpend / price);
-    if (qty < 1) return res.status(400).send('Not enough buying power');
+    if (!qty || qty < 1) return res.status(400).send('Not enough buying power');
 
     await placeOrder(ticker, action.toLowerCase(), qty);
     res.status(200).send(`Order placed: ${action} ${qty} ${ticker}`);
