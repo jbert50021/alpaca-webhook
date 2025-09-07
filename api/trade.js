@@ -13,9 +13,6 @@ const ALLOWED_TICKERS = ['IMNM'];
 const MARKET_OPEN_HOUR = 8;
 const MARKET_CLOSE_HOUR = 15;
 
-// In-memory position lock
-const positionLocks = {};
-
 function isMarketHours() {
   const now = new Date();
   const utcHour = now.getUTCHours();
@@ -48,6 +45,18 @@ async function getPosition(ticker) {
     if (err.response && err.response.status === 404) return 0;
     throw err;
   }
+}
+
+async function hasOpenBuyOrder(ticker) {
+  const res = await axios.get(`${ALPACA_BASE_URL}/v2/orders?status=open&symbols=${ticker}`, {
+    headers: {
+      'APCA-API-KEY-ID': ALPACA_API_KEY,
+      'APCA-API-SECRET-KEY': ALPACA_SECRET_KEY,
+    },
+  });
+
+  const orders = res.data || [];
+  return orders.some(order => order.symbol === ticker && order.side === 'buy');
 }
 
 async function placeOrder(symbol, side, qty) {
@@ -103,15 +112,11 @@ module.exports = async (req, res) => {
     if (!['BUY', 'SELL'].includes(action)) return res.status(400).send('Invalid action');
     if (!isMarketHours() && !test) return res.status(403).send('Outside market hours');
 
-    // Position lock (in-memory)
-    if (positionLocks[ticker]) return res.status(429).send('Buy locked for this ticker');
-    positionLocks[ticker] = true;
-    setTimeout(() => delete positionLocks[ticker], 90000);
-
-    // Only allow BUY if not already holding
+    // Only allow BUY if not already holding or pending
     if (action === 'BUY') {
       const positionQty = await getPosition(ticker);
-      if (positionQty > 0) return res.status(409).send('Already holding position');
+      const hasPending = await hasOpenBuyOrder(ticker);
+      if (positionQty > 0 || hasPending) return res.status(409).send('Already holding or pending buy order');
     }
 
     const account = await getAccount();
