@@ -1,3 +1,5 @@
+// api/trade.js - Vercel-native version with optional market hours bypass
+
 const axios = require('axios');
 
 const ALPACA_API_KEY = process.env.ALPACA_API_KEY;
@@ -48,10 +50,10 @@ module.exports = async (req, res) => {
   }
 
   try {
-    const { ticker, action } = req.body;
+    const { ticker, action, test } = req.body;
     if (!ALLOWED_TICKERS.includes(ticker)) return res.status(403).send('Ticker not allowed');
     if (!['BUY', 'SELL'].includes(action)) return res.status(400).send('Invalid action');
-    if (!isMarketHours()) return res.status(403).send('Outside market hours');
+    if (!isMarketHours() && !test) return res.status(403).send('Outside market hours');
 
     const account = await getAccount();
     const buyingPower = parseFloat(account.buying_power);
