@@ -1,4 +1,4 @@
-// api/trade.js - with qty validation fix
+// api/trade.js - improved price extraction with fallback
 
 const axios = require('axios');
 
@@ -59,15 +59,19 @@ module.exports = async (req, res) => {
     const buyingPower = parseFloat(account.buying_power);
     const maxSpend = buyingPower * TRADE_PERCENT;
 
-    const quote = await axios.get(`https://data.alpaca.markets/v2/stocks/${ticker}/quotes/latest`, {
+    const quoteResp = await axios.get(`https://data.alpaca.markets/v2/stocks/${ticker}/quotes/latest`, {
       headers: {
         'APCA-API-KEY-ID': ALPACA_API_KEY,
         'APCA-API-SECRET-KEY': ALPACA_SECRET_KEY,
       },
     });
 
-    const price = quote?.data?.quote?.ap;
-    if (!price || isNaN(price)) return res.status(400).send('Invalid price data');
+    const quote = quoteResp?.data?.quote || {};
+    const price = quote.ap || quote.bp || quote.lp || null;
+    if (!price || isNaN(price)) {
+      console.error('Invalid quote data:', quote);
+      return res.status(400).send('Invalid price data');
+    }
 
     const qty = Math.floor(maxSpend / price);
     if (!qty || qty < 1) return res.status(400).send('Not enough buying power');
