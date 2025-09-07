@@ -1,28 +1,21 @@
-// index.js - Deploy to Vercel as an API route
+// api/trade.js - Vercel-native version (no Express)
 
-const express = require('express');
-const bodyParser = require('body-parser');
 const axios = require('axios');
-const app = express();
 
-app.use(bodyParser.json());
-
-// === CONFIGURATION ===
 const ALPACA_API_KEY = process.env.ALPACA_API_KEY;
 const ALPACA_SECRET_KEY = process.env.ALPACA_SECRET_KEY;
 const ALPACA_BASE_URL = 'https://paper-api.alpaca.markets';
-const TRADE_PERCENT = 0.02; // 2% of account
+const TRADE_PERCENT = 0.02;
 const ALLOWED_TICKERS = ['IMNM'];
-const MARKET_OPEN_HOUR = 8;  // Central Time
-const MARKET_CLOSE_HOUR = 15; // Central Time
+const MARKET_OPEN_HOUR = 8;
+const MARKET_CLOSE_HOUR = 15;
 
-// === HELPER FUNCTIONS ===
 function isMarketHours() {
   const now = new Date();
   const utcHour = now.getUTCHours();
   const utcDay = now.getUTCDay();
-  if (utcDay === 0 || utcDay === 6) return false; // Sunday or Saturday
-  const ctHour = utcHour - 5; // Convert UTC to Central
+  if (utcDay === 0 || utcDay === 6) return false;
+  const ctHour = utcHour - 5;
   return ctHour >= MARKET_OPEN_HOUR && ctHour < MARKET_CLOSE_HOUR;
 }
 
@@ -51,8 +44,11 @@ async function placeOrder(symbol, side, qty) {
   });
 }
 
-// === MAIN ROUTE ===
-app.post('/api/trade', async (req, res) => {
+module.exports = async (req, res) => {
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
   try {
     const { ticker, action } = req.body;
     if (!ALLOWED_TICKERS.includes(ticker)) return res.status(403).send('Ticker not allowed');
@@ -69,6 +65,7 @@ app.post('/api/trade', async (req, res) => {
         'APCA-API-SECRET-KEY': ALPACA_SECRET_KEY,
       },
     });
+
     const price = quote.data.quote.ap;
     const qty = Math.floor(maxSpend / price);
     if (qty < 1) return res.status(400).send('Not enough buying power');
@@ -76,9 +73,7 @@ app.post('/api/trade', async (req, res) => {
     await placeOrder(ticker, action.toLowerCase(), qty);
     res.status(200).send(`Order placed: ${action} ${qty} ${ticker}`);
   } catch (err) {
-    console.error(err);
+    console.error('ERROR:', err);
     res.status(500).send('Server error');
   }
-});
-
-module.exports = app;
+};
