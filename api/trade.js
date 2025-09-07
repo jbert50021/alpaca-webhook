@@ -112,10 +112,10 @@ module.exports = async (req, res) => {
     if (!['BUY', 'SELL'].includes(action)) return res.status(400).send('Invalid action');
     if (!isMarketHours() && !test) return res.status(403).send('Outside market hours');
 
-    // Only allow BUY if not already holding or pending
+    // Only allow BUY if not already holding or pending (unless test mode)
     if (action === 'BUY') {
       const positionQty = await getPosition(ticker);
-      const hasPending = await hasOpenBuyOrder(ticker);
+      const hasPending = test ? false : await hasOpenBuyOrder(ticker);
       if (positionQty > 0 || hasPending) return res.status(409).send('Already holding or pending buy order');
     }
 
