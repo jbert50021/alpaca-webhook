@@ -1,4 +1,4 @@
-// api/trade.js - logs trades to Google Sheets and blocks overbuying
+// api/trade.js - logs trades to Google Sheets and blocks overbuying & day trades
 
 const axios = require('axios');
 const { google } = require('googleapis');
@@ -59,6 +59,23 @@ async function hasOpenBuyOrder(ticker) {
   return orders.some(order => order.symbol === ticker && order.side === 'buy');
 }
 
+async function didTradeToday(ticker, action) {
+  const today = new Date().toISOString().split('T')[0];
+  const res = await axios.get(`${ALPACA_BASE_URL}/v2/orders?status=closed&symbols=${ticker}`, {
+    headers: {
+      'APCA-API-KEY-ID': ALPACA_API_KEY,
+      'APCA-API-SECRET-KEY': ALPACA_SECRET_KEY,
+    },
+  });
+
+  const orders = res.data || [];
+  return orders.some(order =>
+    order.symbol === ticker &&
+    order.side.toUpperCase() !== action &&
+    order.filled_at && order.filled_at.startsWith(today)
+  );
+}
+
 async function placeOrder(symbol, side, qty) {
   return await axios.post(`${ALPACA_BASE_URL}/v2/orders`, {
     symbol,
@@ -112,7 +129,13 @@ module.exports = async (req, res) => {
     if (!['BUY', 'SELL'].includes(action)) return res.status(400).send('Invalid action');
     if (!isMarketHours() && !test) return res.status(403).send('Outside market hours');
 
-    // Only allow BUY if not already holding or pending (unless test mode)
+    if (!test) {
+      const alreadyTradedToday = await didTradeToday(ticker, action);
+      if (alreadyTradedToday) {
+        return res.status(403).send(`Blocked to avoid day trade: already ${action === 'BUY' ? 'sold' : 'bought'} ${ticker} today.`);
+      }
+    }
+
     if (action === 'BUY') {
       const positionQty = await getPosition(ticker);
       const hasPending = test ? false : await hasOpenBuyOrder(ticker);
