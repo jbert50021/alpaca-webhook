@@ -164,7 +164,7 @@ module.exports = async (req, res) => {
     if (!qty || qty < 1) return res.status(400).send('Not enough buying power');
 
     await placeOrder(ticker, action.toLowerCase(), qty);
-    await logToGoogleSheet(ticker, action, qty, price, test ? 'test mode' : 'live');
+    //await logToGoogleSheet(ticker, action, qty, price, test ? 'test mode' : 'live');
 
     res.status(200).send(`Order placed: ${action} ${qty} ${ticker}`);
   } catch (err) {
