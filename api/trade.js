@@ -1,46 +1,174 @@
-//@version=5
-indicator("RSI + VWAP Alert (Debugged for Entry Precision)", overlay=true)
+// api/trade.js - logs trades to Google Sheets and blocks overbuying & day trades
 
-// === Inputs ===
-debugMode = input.bool(true, title="Show Debug Info")
-minVolume = input.int(25000, title="Min Volume")
-allowedTickers = input.string("IMTX,DMAC", title="Allowed Tickers (comma-separated)")
+const axios = require('axios');
+const { google } = require('googleapis');
 
-// === Ticker Filter ===
-tickerList = str.split(allowedTickers, ",")
-isAllowed = array.includes(tickerList, syminfo.ticker)
+const ALPACA_API_KEY = process.env.ALPACA_API_KEY;
+const ALPACA_SECRET_KEY = process.env.ALPACA_SECRET_KEY;
+const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
+const GOOGLE_SERVICE_ACCOUNT = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
+const ALPACA_BASE_URL = 'https://paper-api.alpaca.markets';
+const TRADE_PERCENT = 0.02;
+const ALLOWED_TICKERS = ['IMNM','IMTX','DMAC'];
+const MARKET_OPEN_HOUR = 8;
+const MARKET_CLOSE_HOUR = 15;
 
-// === VWAP (1D) ===
-vwap = request.security(syminfo.tickerid, "1D", ta.vwap)
+function isMarketHours() {
+  const now = new Date();
+  const utcHour = now.getUTCHours();
+  const utcDay = now.getUTCDay();
+  if (utcDay === 0 || utcDay === 6) return false;
+  const ctHour = utcHour - 5;
+  return ctHour >= MARKET_OPEN_HOUR && ctHour < MARKET_CLOSE_HOUR;
+}
 
-// === RSI & Crossover Logic ===
-rsi = ta.rsi(close, 14)
-rsiSMA = ta.sma(rsi, 14)
-rsiCross = ta.cross(rsi, rsiSMA)  // Use cross, not crossover
+async function getAccount() {
+  const res = await axios.get(`${ALPACA_BASE_URL}/v2/account`, {
+    headers: {
+      'APCA-API-KEY-ID': ALPACA_API_KEY,
+      'APCA-API-SECRET-KEY': ALPACA_SECRET_KEY,
+    },
+  });
+  return res.data;
+}
 
-// === Volume Filter ===
-volOkEntry = volume > minVolume
+async function getPosition(ticker) {
+  try {
+    const res = await axios.get(`${ALPACA_BASE_URL}/v2/positions/${ticker}`, {
+      headers: {
+        'APCA-API-KEY-ID': ALPACA_API_KEY,
+        'APCA-API-SECRET-KEY': ALPACA_SECRET_KEY,
+      },
+    });
+    return parseFloat(res.data.qty);
+  } catch (err) {
+    if (err.response && err.response.status === 404) return 0;
+    throw err;
+  }
+}
 
-// === Day Tracking ===
-daysSinceStartOfYear = math.floor((timenow - timestamp(year, 1, 1, 0, 0)) / 86400000)
-var int lastSignalDay = na
-currentDay = math.floor((time - timestamp(year, 1, 1, 0, 0)) / 86400000)
-entrySignalToday = na(lastSignalDay) or (currentDay != lastSignalDay)
+async function hasOpenBuyOrder(ticker) {
+  const res = await axios.get(`${ALPACA_BASE_URL}/v2/orders?status=open&symbols=${ticker}`, {
+    headers: {
+      'APCA-API-KEY-ID': ALPACA_API_KEY,
+      'APCA-API-SECRET-KEY': ALPACA_SECRET_KEY,
+    },
+  });
 
-// === Entry & Exit Conditions ===
-entrySignal = isAllowed and rsi < 70 and rsi > 50 and rsiCross and volOkEntry and entrySignalToday
-exitSignal = isAllowed and rsi > 65 and rsiCross and volOkEntry
+  const orders = res.data || [];
+  return orders.some(order => order.symbol === ticker && order.side === 'buy');
+}
 
-// === Record entry signal day ===
-if entrySignal
-    lastSignalDay := currentDay
+async function didTradeToday(ticker, action) {
+  const today = new Date().toISOString().split('T')[0];
+  const res = await axios.get(`${ALPACA_BASE_URL}/v2/orders?status=closed&symbols=${ticker}`, {
+    headers: {
+      'APCA-API-KEY-ID': ALPACA_API_KEY,
+      'APCA-API-SECRET-KEY': ALPACA_SECRET_KEY,
+    },
+  });
 
-// === Debug Labels ===
-if debugMode and entrySignal
-    label.new(x=bar_index, y=high, text="BUY\nRSI: " + str.tostring(rsi, '#.##') + "\nVWAP: " + str.tostring(vwap, '#.##'), style=label.style_label_up, color=color.green, textcolor=color.white, size=size.small, yloc=yloc.abovebar)
-if debugMode and exitSignal
-    label.new(x=bar_index, y=low, text="SELL\nRSI: " + str.tostring(rsi, '#.##') + "\nVWAP: " + str.tostring(vwap, '#.##'), style=label.style_label_down, color=color.red, textcolor=color.white, size=size.small, yloc=yloc.belowbar)
+  const orders = res.data || [];
+  return orders.some(order =>
+    order.symbol === ticker &&
+    order.side.toUpperCase() !== action &&
+    order.filled_at && order.filled_at.startsWith(today)
+  );
+}
 
-// === Alerts ===
-alertcondition(entrySignal, title="Buy Alert", message="BUY: RSI rising and crossing SMA with volume")
-alertcondition(exitSignal, title="Sell Alert", message="SELL: RSI high and curling down")
+async function placeOrder(symbol, side, qty) {
+  return await axios.post(`${ALPACA_BASE_URL}/v2/orders`, {
+    symbol,
+    qty,
+    side,
+    type: 'market',
+    time_in_force: 'gtc',
+  }, {
+    headers: {
+      'APCA-API-KEY-ID': ALPACA_API_KEY,
+      'APCA-API-SECRET-KEY': ALPACA_SECRET_KEY,
+    },
+  });
+}
+
+async function logToGoogleSheet(ticker, action, qty, price, notes = '') {
+  const auth = new google.auth.JWT(
+    GOOGLE_SERVICE_ACCOUNT.client_email,
+    null,
+    GOOGLE_SERVICE_ACCOUNT.private_key,
+    ['https://www.googleapis.com/auth/spreadsheets']
+  );
+
+  const sheets = google.sheets({ version: 'v4', auth });
+
+  const row = [[
+    new Date().toISOString(),
+    ticker,
+    action,
+    qty,
+    price,
+    notes
+  ]];
+
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: GOOGLE_SHEET_ID,
+    range: 'Sheet1!A:F',
+    valueInputOption: 'USER_ENTERED',
+    resource: { values: row },
+  });
+}
+
+module.exports = async (req, res) => {
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  try {
+    const { ticker, action, test } = req.body;
+    if (!ALLOWED_TICKERS.includes(ticker)) return res.status(403).send('Ticker not allowed');
+    if (!['BUY', 'SELL'].includes(action)) return res.status(400).send('Invalid action');
+    if (!isMarketHours() && !test) return res.status(403).send('Outside market hours');
+
+    if (!test) {
+      const alreadyTradedToday = await didTradeToday(ticker, action);
+      if (alreadyTradedToday) {
+        return res.status(403).send(`Blocked to avoid day trade: already ${action === 'BUY' ? 'sold' : 'bought'} ${ticker} today.`);
+      }
+    }
+
+    if (action === 'BUY') {
+      const positionQty = await getPosition(ticker);
+      const hasPending = test ? false : await hasOpenBuyOrder(ticker);
+      if (positionQty > 0 || hasPending) return res.status(409).send('Already holding or pending buy order');
+    }
+
+    const account = await getAccount();
+    const buyingPower = parseFloat(account.buying_power);
+    const maxSpend = buyingPower * TRADE_PERCENT;
+
+    const quoteResp = await axios.get(`https://data.alpaca.markets/v2/stocks/${ticker}/quotes/latest`, {
+      headers: {
+        'APCA-API-KEY-ID': ALPACA_API_KEY,
+        'APCA-API-SECRET-KEY': ALPACA_SECRET_KEY,
+      },
+    });
+
+    const quote = quoteResp?.data?.quote || {};
+    const price = quote.ap || quote.bp || quote.lp || null;
+    if (!price || isNaN(price)) {
+      console.error('Invalid quote data:', quote);
+      return res.status(400).send('Invalid price data');
+    }
+
+    const qty = Math.floor(maxSpend / price);
+    if (!qty || qty < 1) return res.status(400).send('Not enough buying power');
+
+    await placeOrder(ticker, action.toLowerCase(), qty);
+    await logToGoogleSheet(ticker, action, qty, price, test ? 'test mode' : 'live');
+
+    res.status(200).send(`Order placed: ${action} ${qty} ${ticker}`);
+  } catch (err) {
+    console.error('ERROR:', err);
+    res.status(500).send('Server error');
+  }
+};
