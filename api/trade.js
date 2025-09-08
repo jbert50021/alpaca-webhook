@@ -9,7 +9,7 @@ const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const GOOGLE_SERVICE_ACCOUNT = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
 const ALPACA_BASE_URL = 'https://paper-api.alpaca.markets';
 const TRADE_PERCENT = 0.02;
-const ALLOWED_TICKERS = ['IMNM'];
+const ALLOWED_TICKERS = ['IMNM','IMTX','DMAC'];
 const MARKET_OPEN_HOUR = 8;
 const MARKET_CLOSE_HOUR = 15;
 
